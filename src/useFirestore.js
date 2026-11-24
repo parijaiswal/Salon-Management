@@ -2,19 +2,19 @@
  * useFirestore.js — Instant reactive storage with Firestore real-time sync.
  *
  * Performance Architecture:
- * 1. Zero-delay initial render: Loads immediately from local cache / default settings (<1ms).
- * 2. Instant tab sync: Uses BroadcastChannel for instant cross-tab sync (Phone, Tablet, TV).
- * 3. Firestore sync: If Firebase credentials are set in .env, connects and keeps all devices in sync.
- * 4. Resilient: If Firebase is not configured or network has latency, the app is 100% responsive without loading delay.
+ * 1. Direct Firestore Read & Write: Join Queue & My Status read and save directly to Cloud Firestore.
+ * 2. Instant tab sync: Uses BroadcastChannel + in-memory listeners for zero-delay cross-screen updates.
+ * 3. Real-time Listeners: onSnapshot keeps Phone, Tablet, Barber view and TV in live sync.
  */
 import { useState, useEffect } from 'react'
 import {
   collection, doc, onSnapshot,
-  addDoc, updateDoc, setDoc, serverTimestamp, query, where, getDoc,
+  addDoc, updateDoc, setDoc, getDocs, getDoc,
 } from 'firebase/firestore'
 import { db, isFirebaseConfigured } from './firebase'
 import {
   DEFAULT_SETTINGS, DEFAULT_SERVICES, nextTokenLabel, totalMinutes, totalPrice,
+  hasActiveSpot,
 } from './queueRules'
 
 const STORAGE_KEY_CUSTOMERS = 'salon_customers_v1'
@@ -22,6 +22,10 @@ const STORAGE_KEY_SETTINGS  = 'salon_settings_v1'
 
 // BroadcastChannel for instant multi-tab sync (phone, tablet, TV)
 const channel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('salon_sync_channel') : null
+
+// In-memory subscribers to guarantee immediate re-rendering in the current tab
+const customersSubscribers = new Set()
+const settingsSubscribers  = new Set()
 
 function getLocalCustomers() {
   try {
@@ -38,8 +42,15 @@ function saveLocalCustomers(customers) {
   try {
     localStorage.setItem(STORAGE_KEY_CUSTOMERS, JSON.stringify(customers))
   } catch {}
+  // Notify all components in the current tab immediately
+  customersSubscribers.forEach(cb => {
+    try { cb(customers) } catch {}
+  })
+  // Broadcast to other tabs
   if (channel) {
-    channel.postMessage({ type: 'CUSTOMERS_UPDATED', payload: customers })
+    try {
+      channel.postMessage({ type: 'CUSTOMERS_UPDATED', payload: customers })
+    } catch {}
   }
 }
 
@@ -50,7 +61,11 @@ function getLocalSettings() {
       return { ...DEFAULT_SETTINGS, services: DEFAULT_SERVICES }
     }
     const parsed = JSON.parse(raw)
-    return { ...DEFAULT_SETTINGS, ...parsed, services: parsed.services || DEFAULT_SERVICES }
+    const settings = { ...DEFAULT_SETTINGS, ...parsed, services: parsed.services || DEFAULT_SERVICES }
+    if (settings.closeTime === '21:00') {
+      settings.closeTime = '23:59'
+    }
+    return settings
   } catch {
     return { ...DEFAULT_SETTINGS, services: DEFAULT_SERVICES }
   }
@@ -60,8 +75,15 @@ function saveLocalSettings(settings) {
   try {
     localStorage.setItem(STORAGE_KEY_SETTINGS, JSON.stringify(settings))
   } catch {}
+  // Notify all components in the current tab immediately
+  settingsSubscribers.forEach(cb => {
+    try { cb(settings) } catch {}
+  })
+  // Broadcast to other tabs
   if (channel) {
-    channel.postMessage({ type: 'SETTINGS_UPDATED', payload: settings })
+    try {
+      channel.postMessage({ type: 'SETTINGS_UPDATED', payload: settings })
+    } catch {}
   }
 }
 
@@ -69,10 +91,13 @@ function saveLocalSettings(settings) {
 
 export function useCustomers() {
   const [customers, setCustomers] = useState(getLocalCustomers)
-  const [loading, setLoading]     = useState(false) // Never block initial paint
+  const [loading, setLoading]     = useState(true)
 
   useEffect(() => {
-    // 1. Listen for cross-tab updates
+    // 1. Subscribe to in-memory updates within this window
+    customersSubscribers.add(setCustomers)
+
+    // 2. Listen for cross-tab updates via BroadcastChannel
     const handleBroadcast = (e) => {
       if (e.data?.type === 'CUSTOMERS_UPDATED' && Array.isArray(e.data.payload)) {
         setCustomers(e.data.payload)
@@ -80,7 +105,7 @@ export function useCustomers() {
     }
     if (channel) channel.addEventListener('message', handleBroadcast)
 
-    // 2. If Firebase is active, listen to Firestore
+    // 3. Connect to Firestore real-time collection
     let unsub = () => {}
     if (isFirebaseConfigured && db) {
       try {
@@ -103,6 +128,7 @@ export function useCustomers() {
     }
 
     return () => {
+      customersSubscribers.delete(setCustomers)
       if (channel) channel.removeEventListener('message', handleBroadcast)
       unsub()
     }
@@ -118,12 +144,24 @@ export function useCustomer(customerId) {
     const all = getLocalCustomers()
     return all.find(c => String(c.id) === String(customerId)) || null
   })
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    if (!customerId) return
+    if (!customerId) {
+      setLoading(false)
+      return
+    }
 
-    // Update from local whenever broadcast arrives
+    setLoading(true)
+
+    // Listen to local in-memory updates
+    const handleLocalUpdate = (all) => {
+      const found = all.find(c => String(c.id) === String(customerId))
+      if (found) setCustomer(found)
+    }
+    customersSubscribers.add(handleLocalUpdate)
+
+    // Listen for cross-tab broadcasts
     const handleBroadcast = (e) => {
       if (e.data?.type === 'CUSTOMERS_UPDATED') {
         const found = (e.data.payload || []).find(c => String(c.id) === String(customerId))
@@ -132,6 +170,7 @@ export function useCustomer(customerId) {
     }
     if (channel) channel.addEventListener('message', handleBroadcast)
 
+    // Live real-time listener to Firestore document
     let unsub = () => {}
     if (isFirebaseConfigured && db) {
       try {
@@ -139,19 +178,32 @@ export function useCustomer(customerId) {
         unsub = onSnapshot(docRef, (snap) => {
           if (snap.exists()) {
             setCustomer({ id: snap.id, ...snap.data() })
+          } else {
+            // Check fallback if not in Firestore
+            const local = getLocalCustomers().find(c => String(c.id) === String(customerId))
+            setCustomer(local || null)
           }
           setLoading(false)
         }, (err) => {
           console.warn('Firestore customer listener error:', err)
+          const local = getLocalCustomers().find(c => String(c.id) === String(customerId))
+          setCustomer(local || null)
           setLoading(false)
         })
       } catch (err) {
         console.warn('Single customer fetch error:', err)
+        const local = getLocalCustomers().find(c => String(c.id) === String(customerId))
+        setCustomer(local || null)
         setLoading(false)
       }
+    } else {
+      const local = getLocalCustomers().find(c => String(c.id) === String(customerId))
+      setCustomer(local || null)
+      setLoading(false)
     }
 
     return () => {
+      customersSubscribers.delete(handleLocalUpdate)
       if (channel) channel.removeEventListener('message', handleBroadcast)
       unsub()
     }
@@ -164,9 +216,13 @@ export function useCustomer(customerId) {
 
 export function useSettings() {
   const [settings, setSettings] = useState(getLocalSettings)
-  const [loading, setLoading]   = useState(false)
+  const [loading, setLoading]   = useState(true)
 
   useEffect(() => {
+    // 1. Subscribe to in-memory updates
+    settingsSubscribers.add(setSettings)
+
+    // 2. Listen to cross-tab updates
     const handleBroadcast = (e) => {
       if (e.data?.type === 'SETTINGS_UPDATED' && e.data.payload) {
         setSettings(e.data.payload)
@@ -174,6 +230,7 @@ export function useSettings() {
     }
     if (channel) channel.addEventListener('message', handleBroadcast)
 
+    // 3. Listen to Firestore settings document
     let unsub = () => {}
     if (isFirebaseConfigured && db) {
       try {
@@ -181,6 +238,10 @@ export function useSettings() {
         unsub = onSnapshot(docRef, (snap) => {
           if (snap.exists()) {
             const data = snap.data()
+            if (data.closeTime === '21:00') {
+              data.closeTime = '23:59'
+              setDoc(docRef, { closeTime: '23:59' }, { merge: true }).catch(() => {})
+            }
             setSettings(data)
             saveLocalSettings(data)
           } else {
@@ -207,6 +268,7 @@ export function useSettings() {
     }
 
     return () => {
+      settingsSubscribers.delete(setSettings)
       if (channel) channel.removeEventListener('message', handleBroadcast)
       unsub()
     }
@@ -218,13 +280,35 @@ export function useSettings() {
 // ── Write helpers ─────────────────────────────────────────────────────────────
 
 export async function addCustomer({ name, phone, serviceIds, preferredBarber, allServices, allCustomers }) {
-  const { tokenNumber, tokenLabel } = nextTokenLabel(allCustomers)
+  const cleanPhone = String(phone || '').replace(/\D/g, '')
+
+  // 1. Fetch fresh customers from Firestore to guarantee atomic token numbering and spot check
+  let currentList = allCustomers || []
+  if (isFirebaseConfigured && db) {
+    try {
+      const snap = await getDocs(collection(db, 'customers'))
+      if (!snap.empty) {
+        currentList = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      }
+    } catch (err) {
+      console.warn('Could not read Firestore customers before join:', err)
+    }
+  }
+
+  // 2. Check if this phone number already has an active spot
+  const existing = hasActiveSpot(currentList, cleanPhone)
+  if (existing) {
+    return { existingSpot: existing }
+  }
+
+  // 3. Compute token and totals
+  const { tokenNumber, tokenLabel } = nextTokenLabel(currentList)
   const mins  = totalMinutes(serviceIds, allServices)
   const price = totalPrice(serviceIds, allServices)
 
   const payload = {
     name: name.trim(),
-    phone: phone.trim(),
+    phone: cleanPhone,
     serviceIds,
     preferredBarber: preferredBarber ?? 'any',
     tokenNumber,
@@ -239,16 +323,15 @@ export async function addCustomer({ name, phone, serviceIds, preferredBarber, al
     createdAt: Date.now(),
   }
 
-  // 1. If Firebase is active, persist to Firestore
+  // 4. Save directly to Cloud Firestore
   if (isFirebaseConfigured && db) {
     try {
       const ref = await addDoc(collection(db, 'customers'), {
         ...payload,
-        createdAt: serverTimestamp(),
+        createdAt: Date.now(),
       })
       const full = { id: ref.id, ...payload }
-      // Also update local list
-      const updated = [...allCustomers, full]
+      const updated = [...currentList, full]
       saveLocalCustomers(updated)
       return full
     } catch (err) {
@@ -256,10 +339,10 @@ export async function addCustomer({ name, phone, serviceIds, preferredBarber, al
     }
   }
 
-  // 2. Local fallback
+  // Fallback
   const id = 'c_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7)
   const newCustomer = { id, ...payload }
-  const updated = [...allCustomers, newCustomer]
+  const updated = [...currentList, newCustomer]
   saveLocalCustomers(updated)
   return newCustomer
 }
@@ -275,7 +358,7 @@ export async function updateCustomer(id, fields) {
   })
   saveLocalCustomers(updated)
 
-  // Sync to Firestore if configured
+  // Sync directly to Firestore
   if (isFirebaseConfigured && db) {
     try {
       await updateDoc(doc(db, 'customers', String(id)), fields)
@@ -288,8 +371,11 @@ export async function updateCustomer(id, fields) {
 export async function updateSettings(fields) {
   const current = getLocalSettings()
   const updated = { ...current, ...fields }
+  
+  // Immediately notify all screens in current tab & other tabs
   saveLocalSettings(updated)
 
+  // Sync directly to Firestore
   if (isFirebaseConfigured && db) {
     try {
       await setDoc(doc(db, 'settings', 'salon'), fields, { merge: true })

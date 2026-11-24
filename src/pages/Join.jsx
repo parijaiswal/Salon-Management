@@ -111,6 +111,11 @@ export default function Join() {
         allServices:     settings?.services ?? [],
         allCustomers:    customers,
       })
+      if (created?.existingSpot) {
+        setExistingSpot(created.existingSpot)
+        setSubmitting(false)
+        return
+      }
       navigate(`/status/${created.id}`)
     } catch (err) {
       console.error('Failed to join queue:', err)

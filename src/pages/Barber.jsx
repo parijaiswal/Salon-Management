@@ -39,7 +39,7 @@ export default function Barber() {
   const [breakError, setBreakError] = useState('')
 
   // Live timer tick every second
-  const [, setTick] = useState(0)
+  const [tick, setTick] = useState(0)
   useEffect(() => {
     const timer = setInterval(() => setTick(t => t + 1), 1000)
     return () => clearInterval(timer)
@@ -81,17 +81,41 @@ export default function Barber() {
     return (settings?.services ?? []).filter(s => nextCust.serviceIds.includes(s.id))
   }, [nextCust, settings])
 
-  // Elapsed timer string for In Chair customer
-  const timerDisplay = useMemo(() => {
-    if (currentCust?.status !== STATUSES.IN_CHAIR || !currentCust?.startedAt) return '00:00'
+  // Total service duration in minutes for current customer
+  const totalMins = useMemo(() => {
+    if (currentCust?.totalMinutes) return currentCust.totalMinutes
+    if (!currentCust?.serviceIds) return 30
+    return (settings?.services ?? [])
+      .filter(s => currentCust.serviceIds.includes(s.id))
+      .reduce((sum, s) => sum + (s.minutes || 0), 0) || 30
+  }, [currentCust, settings])
+
+  // Live countdown and elapsed timer for customer In Chair (updates every second via tick)
+  const { timerDisplay, remainingMinutes, progressPercent } = useMemo(() => {
+    if (currentCust?.status !== STATUSES.IN_CHAIR || !currentCust?.startedAt) {
+      return { timerDisplay: '00:00', remainingMinutes: totalMins, progressPercent: 0 }
+    }
     const startedMs = typeof currentCust.startedAt?.toMillis === 'function'
       ? currentCust.startedAt.toMillis()
-      : Number(currentCust.startedAt)
+      : (typeof currentCust.startedAt?.toDate === 'function'
+          ? currentCust.startedAt.toDate().getTime()
+          : (currentCust.startedAt?.seconds ? currentCust.startedAt.seconds * 1000 : Number(currentCust.startedAt)))
+
     const elapsedSec = Math.max(0, Math.floor((Date.now() - startedMs) / 1000))
     const m = Math.floor(elapsedSec / 60)
     const s = elapsedSec % 60
-    return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
-  }, [currentCust])
+    const formattedElapsed = `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+
+    const elapsedMin = elapsedSec / 60
+    const remMin = Math.max(0, Math.ceil(totalMins - elapsedMin))
+    const pct = totalMins > 0 ? Math.min(100, Math.round((elapsedMin / totalMins) * 100)) : 0
+
+    return {
+      timerDisplay: formattedElapsed,
+      remainingMinutes: remMin,
+      progressPercent: pct,
+    }
+  }, [currentCust, totalMins, tick])
 
   // ── Actions ─────────────────────────────────────────────────────────────────
 
@@ -130,7 +154,10 @@ export default function Barber() {
     }
 
     const updatedBarbers = (settings?.barbers ?? []).map(b => {
-      if (b.id === currentBarber.id) {
+      if (
+        b.id.toLowerCase() === currentBarber.id.toLowerCase() ||
+        b.name.toLowerCase() === currentBarber.name.toLowerCase()
+      ) {
         return { ...b, onBreak: !b.onBreak }
       }
       return b
@@ -252,13 +279,33 @@ export default function Barber() {
 
               {/* Timer since start (if inChair) */}
               {currentCust.status === STATUSES.IN_CHAIR ? (
-                <div className="space-y-1">
-                  <p className="text-xs uppercase tracking-wider text-stone/50 font-semibold">
-                    {t('timeLeft')}
-                  </p>
-                  <p className="text-4xl font-mono font-black text-stone">
-                    {timerDisplay}
-                  </p>
+                <div className="space-y-2 p-3.5 bg-stone/5 rounded-2xl border border-stone/10">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-[11px] uppercase tracking-wider text-stone/50 font-bold">
+                        {t('timeLeft')}
+                      </p>
+                      <p className="text-3xl font-mono font-black text-burgundy">
+                        ~{remainingMinutes} {t('min')}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[11px] uppercase tracking-wider text-stone/50 font-bold">
+                        Time in chair
+                      </p>
+                      <p className="text-xl font-mono font-bold text-stone">
+                        {timerDisplay}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Progress bar */}
+                  <div className="w-full bg-stone/20 h-2 rounded-full overflow-hidden">
+                    <div
+                      className="bg-burgundy h-full rounded-full transition-all duration-1000"
+                      style={{ width: `${progressPercent}%` }}
+                    />
+                  </div>
                 </div>
               ) : (
                 <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-800 text-xs font-semibold">

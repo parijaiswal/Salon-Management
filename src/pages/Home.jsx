@@ -51,7 +51,7 @@ export default function Home() {
     return { label: t('free'), color: 'text-emerald-700' }
   }
 
-  const closeLabel = formatTimeDisplay(settings?.closeTime ?? '21:00')
+  const closeLabel = formatTimeDisplay(settings?.closeTime ?? '23:59')
 
   return (
     <div className="min-h-screen bg-cream flex flex-col">

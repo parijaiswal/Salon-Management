@@ -50,7 +50,7 @@ export const DEFAULT_SERVICES = [
 export const DEFAULT_SETTINGS = {
   queueOpen: true,
   openTime:  '09:00',
-  closeTime: '21:00',
+  closeTime: '23:59',
   barbers: [
     { id: 'ravi',  name: 'Ravi',  onDuty: true,  onBreak: false },
     { id: 'amit',  name: 'Amit',  onDuty: true,  onBreak: false },
@@ -102,7 +102,7 @@ export function timeToMinutes(str = '09:00') {
 }
 
 /** Format minutes-of-day to "9 PM" or "9:30 PM" */
-export function formatTimeDisplay(str = '21:00') {
+export function formatTimeDisplay(str = '23:59') {
   const { h, m } = parseTime(str)
   const ampm = h < 12 ? 'AM' : 'PM'
   const displayH = h % 12 === 0 ? 12 : h % 12
@@ -121,7 +121,7 @@ export function isOnlineJoinOpen(settings) {
   const now = new Date()
   const nowMin = now.getHours() * 60 + now.getMinutes()
   const openMin  = timeToMinutes(settings.openTime  ?? '09:00')
-  const closeMin = timeToMinutes(settings.closeTime ?? '21:00')
+  const closeMin = timeToMinutes(settings.closeTime ?? '23:59')
   if (nowMin < openMin) return false
   if (nowMin >= closeMin - CLOSE_JOIN_BEFORE_MINUTES) return false
   return true
@@ -132,7 +132,7 @@ export function isSalonOpen(settings) {
   const now = new Date()
   const nowMin = now.getHours() * 60 + now.getMinutes()
   const openMin  = timeToMinutes(settings?.openTime  ?? '09:00')
-  const closeMin = timeToMinutes(settings?.closeTime ?? '21:00')
+  const closeMin = timeToMinutes(settings?.closeTime ?? '23:59')
   return nowMin >= openMin && nowMin < closeMin
 }
 
@@ -314,4 +314,41 @@ export function totalPrice(serviceIds = [], allServices = []) {
     const svc = allServices.find(s => s.id === id)
     return sum + (svc?.price ?? 0)
   }, 0)
+}
+
+/** Calculate today's summary stats: customers served, average wait in minutes, no-shows. */
+export function queueStats(customers = []) {
+  const served = customers.filter(c => c.status === STATUSES.DONE)
+  const noShows = customers.filter(c => c.status === STATUSES.NO_SHOW)
+
+  // Calculate average wait time (minutes) for customers who waited
+  const servedWithWait = served.filter(c => c.createdAt && (c.calledAt || c.startedAt || c.doneAt))
+
+  let avgWait = 0
+  if (servedWithWait.length > 0) {
+    const totalWait = servedWithWait.reduce((sum, c) => {
+      const created = typeof c.createdAt?.toMillis === 'function' ? c.createdAt.toMillis() : Number(c.createdAt)
+      const endWait = c.calledAt
+        ? (typeof c.calledAt?.toMillis === 'function' ? c.calledAt.toMillis() : Number(c.calledAt))
+        : (c.startedAt
+            ? (typeof c.startedAt?.toMillis === 'function' ? c.startedAt.toMillis() : Number(c.startedAt))
+            : (typeof c.doneAt?.toMillis === 'function' ? c.doneAt.toMillis() : Number(c.doneAt)))
+      const waitMin = Math.max(0, Math.round((endWait - created) / 60000))
+      return sum + waitMin
+    }, 0)
+    avgWait = Math.round(totalWait / servedWithWait.length)
+  } else {
+    // If no one finished yet, compute average wait of currently waiting customers
+    const waiting = customers.filter(c => c.status === STATUSES.WAITING && c.createdAt)
+    if (waiting.length > 0) {
+      const totalWaitMin = waiting.reduce((sum, c) => sum + waitingTimeMinutes(c), 0)
+      avgWait = Math.round(totalWaitMin / waiting.length)
+    }
+  }
+
+  return {
+    servedCount: served.length,
+    avgWaitMinutes: avgWait,
+    noShowCount: noShows.length,
+  }
 }

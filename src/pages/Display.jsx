@@ -129,7 +129,7 @@ export default function Display() {
                 {/* Status / Token */}
                 <div className="text-right">
                   {isOnBreak ? (
-                    <div className="inline-block bg-amber-200/90 text-amber-950 font-black text-3xl md:text-4xl px-8 py-4 rounded-2xl border-2 border-amber-300">
+                    <div className="inline-block bg-amber-200/90 text-amber-950 font-black text-3xl md:text-4xl px-8 py-4 rounded-2xl border-2 border-amber-300 capitalize">
                       {t('onBreak')}
                     </div>
                   ) : currentCust ? (
@@ -152,7 +152,7 @@ export default function Display() {
                       </p>
                     </div>
                   ) : (
-                    <div className="inline-block bg-emerald-100 text-emerald-900 font-black text-3xl md:text-4xl px-8 py-4 rounded-2xl border-2 border-emerald-300">
+                    <div className="inline-block bg-emerald-100 text-emerald-900 font-black text-3xl md:text-4xl px-8 py-4 rounded-2xl border-2 border-emerald-300 capitalize">
                       {t('free')}
                     </div>
                   )}
