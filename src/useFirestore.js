@@ -282,26 +282,16 @@ export function useSettings() {
 export async function addCustomer({ name, phone, serviceIds, preferredBarber, allServices, allCustomers }) {
   const cleanPhone = String(phone || '').replace(/\D/g, '')
 
-  // 1. Fetch fresh customers from Firestore to guarantee atomic token numbering and spot check
-  let currentList = allCustomers || []
-  if (isFirebaseConfigured && db) {
-    try {
-      const snap = await getDocs(collection(db, 'customers'))
-      if (!snap.empty) {
-        currentList = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-      }
-    } catch (err) {
-      console.warn('Could not read Firestore customers before join:', err)
-    }
-  }
+  // Use live Firestore-synced list from useCustomers() (avoids slow blocking getDocs on submit)
+  const currentList = (allCustomers && allCustomers.length > 0) ? allCustomers : getLocalCustomers()
 
-  // 2. Check if this phone number already has an active spot
+  // Check if this phone number already has an active spot
   const existing = hasActiveSpot(currentList, cleanPhone)
   if (existing) {
     return { existingSpot: existing }
   }
 
-  // 3. Compute token and totals
+  // Compute token and totals
   const { tokenNumber, tokenLabel } = nextTokenLabel(currentList)
   const mins  = totalMinutes(serviceIds, allServices)
   const price = totalPrice(serviceIds, allServices)
@@ -323,19 +313,19 @@ export async function addCustomer({ name, phone, serviceIds, preferredBarber, al
     createdAt: Date.now(),
   }
 
-  // 4. Save directly to Cloud Firestore
+  // Persist to Cloud Firestore using a pre-generated doc ID for instant 0ms navigation
   if (isFirebaseConfigured && db) {
     try {
-      const ref = await addDoc(collection(db, 'customers'), {
-        ...payload,
-        createdAt: Date.now(),
-      })
-      const full = { id: ref.id, ...payload }
+      const newRef = doc(collection(db, 'customers'))
+      const full = { id: newRef.id, ...payload }
       const updated = [...currentList, full]
       saveLocalCustomers(updated)
+      setDoc(newRef, payload).catch((err) => {
+        console.warn('Firestore setDoc failed, kept locally:', err)
+      })
       return full
     } catch (err) {
-      console.warn('Firestore addDoc failed, writing locally:', err)
+      console.warn('Firestore addCustomer failed, writing locally:', err)
     }
   }
 
