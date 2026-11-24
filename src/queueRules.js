@@ -19,8 +19,8 @@ export const STATUSES = {
 /** PIN shared by Reception, Barber and Admin. */
 export const STAFF_PIN = '1234'
 
-/** Minutes before closing time that online joining is disabled. */
-export const CLOSE_JOIN_BEFORE_MINUTES = 30
+/** Minutes before closing time that online joining is disabled (set to 0 so joining stays open until 11:59 PM). */
+export const CLOSE_JOIN_BEFORE_MINUTES = 0
 
 /** Minutes after a customer is Called before No-show button becomes active. */
 export const NO_SHOW_WAIT_MINUTES = 10
