@@ -12,3 +12,5 @@ Please build the Owner Settings screen: turning off a service hides it from the 
 okay one thing when a customer is assigned to barber then all the barber dashboard it when I clicked on the start button time left shows 00:00 all the time so fix that bug 
 
 one more when I am opening the link it isn't allowing to add the appoint even the time is not 11:59
+
+Go through the test checklist in docs/03-flows-rules.md and report pass or fail for each item. Fix the failures without changing the design.
